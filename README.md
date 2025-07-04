@@ -1,6 +1,6 @@
 ### 🧃 Steps (Windows)
 
-![Video](https://youtu.be/yMmOjbp4yMI)
+[Video tutorial](https://youtu.be/yMmOjbp4yMI)
 
 1. **Clone this repo**
 
