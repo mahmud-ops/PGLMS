@@ -8,7 +8,7 @@
 
    ```bash
    cd Desktop
-   git clone https://github.com/mahmud-ops/OpenGL_setup.git
+   git clone https://github.com/mahmud-ops/OpenGL_setUP
    ```
 
 2. **Open the folder in VSCode**
