@@ -14,11 +14,13 @@ void framebuffer_size_callback(GLFWwindow *window, int width, int height)
 int main()
 {
     // Initialize GLFW and set OpenGL version
+    // Initialize GLFW and set OpenGL version
     glfwInit();
     glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 3); // OpenGL 3.x
     glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 3);
     glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE); // Core profile = no deprecated functions
 
+    // Create window and OpenGL context
     // Create window and OpenGL context
     GLFWwindow *window = glfwCreateWindow(960, 540, "Mahmud's OpenGL", NULL, NULL);
     if (window == NULL)
@@ -58,10 +60,12 @@ int main()
     };
 
     // Generate and bind VAO
+    // Generate and bind VAO
     GLuint VAO;
     glGenVertexArrays(1, &VAO);
     glBindVertexArray(VAO);
 
+    // Generate and bind VBO, upload vertex data
     // Generate and bind VBO, upload vertex data
     GLuint VBO;
     glGenBuffers(1, &VBO);
