@@ -6,15 +6,16 @@
             "label": "C/C++: g++.exe build active file",
             "command": "C:/MinGW/bin/g++.exe",
             "args": [
-                "-g",
-                "-std=c++17",
-                "-I${workspaceFolder}/include",
-                "-L${workspaceFolder}/lib",
-                "${workspaceFolder}/src/main.cpp",
-                "${workspaceFolder}/src/glad.c",
-                "-lglfw3dll",
-                "-o",
-                "${workspaceFolder}/cutable.exe"
+                    "-g",
+                    "-std=c++17",
+                    "-I${workspaceFolder}/include",
+                    "-L${workspaceFolder}/lib",
+                    "${workspaceFolder}/src/main.cpp",
+                    "${workspaceFolder}/src/Shader.cpp",
+                    "${workspaceFolder}/src/glad.c",
+                    "-lglfw3dll",
+                    "-o",
+                    "${workspaceFolder}/cutable.exe"
             ],
             "options": {
                 "cwd": "${workspaceFolder}"
