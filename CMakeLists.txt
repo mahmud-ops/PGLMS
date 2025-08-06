@@ -3,15 +3,25 @@ project(OpenGLProject)
 
 set(CMAKE_CXX_STANDARD 17)
 
-# Include GLAD and GLFW
-include_directories(include)
-link_directories(lib)
+# Include dirs
+include_directories(
+    include        # shader.h, shape.h
+    include/glad   # glad.h
+    include/GLFW   # if GLFW headers are local (optional)
+    include/glm    # glm headers
+)
 
-# Add glad.c manually
-add_library(glad STATIC lib/glad.c)
+# Source files
+set(SOURCES
+    src/main.cpp
+    src/shader.cpp
+    src/shape.cpp
+    lib/glad.c
+)
 
-# Executable
-add_executable(OpenGLApp src/main.cpp src/shader.cpp)
+# Add executable
+add_executable(OpenGLApp ${SOURCES})
 
-# Link GLFW and GLAD
-target_link_libraries(OpenGLApp glad glfw3 opengl32)
+# Link static or DLL version of GLFW (depending on what you have)
+# Usually glfw3 for static, glfw3dll for dynamic
+target_link_libraries(OpenGLApp glfw3 opengl32)

@@ -1,21 +1,38 @@
 {
-	"version": "2.0.0",
-	"tasks": [
+    "version": "2.0.0",
+    "tasks": [
         {
             "type": "cppbuild",
             "label": "C/C++: g++.exe build active file",
             "command": "C:/MinGW/bin/g++.exe",
             "args": [
-                    "-g",
-                    "-std=c++17",
-                    "-I${workspaceFolder}/include",
-                    "-L${workspaceFolder}/lib",
-                    "${workspaceFolder}/src/main.cpp",
-                    "${workspaceFolder}/src/Shader.cpp",
-                    "${workspaceFolder}/src/glad.c",
-                    "-lglfw3dll",
-                    "-o",
-                    "${workspaceFolder}/cutable.exe"
+                "-g",
+                "-std=c++17",
+                "-I${workspaceFolder}/include",
+                "-I${workspaceFolder}/include", // Corrected: ImGui headers are in include/KHR/
+                "-DIMGUI_DISABLE_STB_TEXTEDIT_IMPLEMENTATION",
+                "-L${workspaceFolder}/lib",
+                "${workspaceFolder}/src/main.cpp",
+                "${workspaceFolder}/src/shader.cpp",
+                "${workspaceFolder}/src/shape.cpp",
+                "${workspaceFolder}/src/glad.c",
+                // Corrected paths for ImGui source files (removed 'imgui/' subfolder)
+                "${workspaceFolder}/src/imgui.cpp",
+                "${workspaceFolder}/src/imgui_draw.cpp",
+                "${workspaceFolder}/src/imgui_widgets.cpp",
+                "${workspaceFolder}/src/imgui_tables.cpp",
+                "${workspaceFolder}/src/imgui_impl_glfw.cpp",
+                "${workspaceFolder}/src/imgui_impl_opengl3.cpp",
+                "${workspaceFolder}/src/imgui_demo.cpp", // ADDED: ImGui demo source file
+                "-lglfw3dll",
+                "-lgdi32",
+                "-lopengl32",
+                "-limm32",
+                "-luser32",
+                "-lkernel32",
+                "-lshell32",
+                "-o",
+                "${workspaceFolder}/cutable.exe"
             ],
             "options": {
                 "cwd": "${workspaceFolder}"
