@@ -15,7 +15,9 @@ public:
           glm::vec3 position,
           float size,
           glm::vec3 color,
-          GLenum drawMode = GL_TRIANGLES); // Default draw mode is triangles
+          GLenum drawMode = GL_TRIANGLES,
+          GLuint textureID = 0,
+          bool useTexture = false); // Default draw mode is triangles
 
     // Method to draw the shape using the provided shader
     void draw(Shader& shader);
@@ -23,11 +25,13 @@ public:
     // Destructor to clean up OpenGL resources
     ~Shape();
 
-    // Public member variables for position, size, and color
+    // Public member variables for position, size, color, texture
     // These are made public so they can be directly modified for animation
     glm::vec3 position;
     float size;
-    glm::vec3 color; // Moved to public section
+    glm::vec3 color;
+    GLuint textureID;
+    bool useTexture;
 
 private:
     // OpenGL buffer IDs

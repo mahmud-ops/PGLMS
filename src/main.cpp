@@ -1,581 +1,556 @@
-#include <iostream>
-#include <vector>
+// power_grid.cpp
+// Power grid simulation with OpenGL, GLFW, GLAD, ImGui, stb_image.
+// Simulates nuclear plant -> transmission tower -> 5 houses.
+// Houses have load %, overload at 100%, manual cut, auto-shed, repair.
+
+#define STB_IMAGE_IMPLEMENTATION
 #include <glad/glad.h>
 #include <GLFW/glfw3.h>
-#include <cmath>
-#include <glm/glm.hpp>
+#include <stb_image.h>
+#include <imgui.h>
+#include <imgui_impl_glfw.h>
+#include <imgui_impl_opengl3.h>
+
+#include <iostream>
+#include <vector>
 #include <string>
-#include <sstream> // For stringstream to format log messages
-#include <iomanip> // For std::fixed and std::setprecision
-#include <algorithm> // Required for std::remove_if
-#include <cstdlib>   // For rand() and srand()
-#include <ctime>     // For time()
+#include <chrono>
+#include <cmath>
+#include <fstream>
+#include <random>
 
-// Include Dear ImGui headers
-#include "imgui.h"
-#include "imgui_impl_glfw.h"
-#include "imgui_impl_opengl3.h"
+#include <windows.h>
+#include <mmsystem.h>
 
-#include "shader.h"
-#include "shape.h"
+using namespace std::chrono;
 
-#define M_PI 3.14159265358979323846
-
-// --- Global Variables and Structs for Simulation State ---
-
-enum HouseState {
-    NORMAL,
-    WARNING,
-    OVERLOADED,
-    POWER_CUT,
-    COOLDOWN
-};
-
-struct HouseZone {
-    Shape shape;
-    glm::vec3 basePosition; // Store original position for reference
-    float currentLoad;
-    float maxLoad;
-    float warningThreshold;
-    float overloadThreshold;
-    HouseState state;
-    double stateChangeTime; // Time when the state last changed (for timers)
-    bool showPowerCutPrompt; // Flag to show modal for this house
-    bool isManualCut; // Was the power cut manual or automatic?
-    std::string name; // Name for GUI display
-};
-
-struct AnimatedCircle {
-    Shape shape;
-    glm::vec3 startPos;
-    glm::vec3 endPos;
-    float pathDuration;
-    float delayOffset;
-    int targetHouseIndex; // To know which house this circle is going to
-    bool isActive; // To control visibility/animation
-};
-
-// Global variables for ImGui and simulation
-std::vector<std::string> logMessages;
-std::vector<HouseZone> houseZones; // Vector to hold all house zones
-std::vector<AnimatedCircle> animatedCircles; // Main flow circles
-std::vector<AnimatedCircle> overloadCircles; // Circles spawned due to overload
-
-// Global flags for modal
-int houseIndexToCutPower = -1; // -1 if no house needs power cut prompt
-double overloadPromptTime = 0.0; // Time when the overload prompt was triggered
-
-// --- New Global Variables for Overload Delay ---
-double lastOverloadEventTime = -15.0; // Initialize to allow immediate first overload
-const double OVERLOAD_INTERVAL = 15.0; // 30 seconds between overload events
-
-// --- Helper Functions ---
-
-void AddLog(const std::string& message) {
-    logMessages.push_back(message);
-    if (logMessages.size() > 20) { // Keep only last 20 messages
-        logMessages.erase(logMessages.begin());
-    }
-}
-
-// Function to spawn additional circles for an overloaded house
-void SpawnOverloadCircles(int houseIdx, const std::vector<float>& circleVertices, const std::vector<GLuint>& circleIndices, float circleSize, glm::vec3 circleColor) {
-    glm::vec3 txPos;
-    // Determine the correct transmitter position based on house index
-    if (houseIdx == 0 || houseIdx == 1) { // House 1 and 2 are connected to Transmitter 1
-        // Transmitter 1 is at (-0.4f, 0.0f, 0.0f) with a height scale of 0.2f and top point at 1.5f * 0.2f
-        txPos = glm::vec3(-0.4f, 0.0f, 0.0f) + glm::vec3(0.0f, 1.5f * 0.2f, 0.0f); // Top of Tx1
-    } else { // House 3 and 4 are connected to Transmitter 2
-        // Transmitter 2 is at (0.4f, 0.3f, 0.0f) with a height scale of 0.2f and top point at 1.5f * 0.2f
-        txPos = glm::vec3(0.4f, 0.3f, 0.0f) + glm::vec3(0.0f, 1.5f * 0.2f, 0.0f); // Top of Tx2
-    }
-
-    // Spawn 2 circles
-    for (int i = 0; i < 2; ++i) {
-        overloadCircles.push_back({
-            Shape(circleVertices, circleIndices, txPos, circleSize, circleColor),
-            txPos,
-            houseZones[houseIdx].basePosition,
-            1.0f, // Faster duration for overload circles
-            (float)i * 0.5f, // Stagger them
-            houseIdx,
-            true
-        });
-    }
-    AddLog("Spawned 2 overload circles for " + houseZones[houseIdx].name);
-}
-
-// Function to remove circles going to a specific house
-void ClearOverloadCirclesForHouse(int houseIdx) {
-    overloadCircles.erase(
-        std::remove_if(overloadCircles.begin(), overloadCircles.end(),
-                       [houseIdx](const AnimatedCircle& circle) {
-                           return circle.targetHouseIndex == houseIdx;
-                       }),
-        overloadCircles.end());
-    AddLog("Cleared overload circles for " + houseZones[houseIdx].name);
-}
-
-
-void framebuffer_size_callback(GLFWwindow *window, int width, int height)
+std::string load_shader_source(const char *path)
 {
-    glViewport(0, 0, width, height);
+    std::ifstream file(path);
+    if (!file.is_open())
+    {
+        std::cerr << "Failed to open shader file: " << path << std::endl;
+        return "";
+    }
+    std::string content((std::istreambuf_iterator<char>(file)), std::istreambuf_iterator<char>());
+    return content;
+}
+
+GLuint compile_shader(GLenum type, const char *src)
+{
+    GLuint s = glCreateShader(type);
+    glShaderSource(s, 1, &src, NULL);
+    glCompileShader(s);
+    int ok;
+    glGetShaderiv(s, GL_COMPILE_STATUS, &ok);
+    if (!ok)
+    {
+        char buf[1024];
+        glGetShaderInfoLog(s, 1024, NULL, buf);
+        std::cerr << "Shader compile error: " << buf << std::endl;
+    }
+    return s;
+}
+
+GLuint create_program()
+{
+    std::string vert_src = load_shader_source("shaders/vertex.glsl");
+    std::string frag_src = load_shader_source("shaders/fragment.glsl");
+    if (vert_src.empty() || frag_src.empty())
+        return 0;
+
+    GLuint v = compile_shader(GL_VERTEX_SHADER, vert_src.c_str());
+    GLuint f = compile_shader(GL_FRAGMENT_SHADER, frag_src.c_str());
+    GLuint p = glCreateProgram();
+    glAttachShader(p, v);
+    glAttachShader(p, f);
+    glLinkProgram(p);
+    int ok;
+    glGetProgramiv(p, GL_LINK_STATUS, &ok);
+    if (!ok)
+    {
+        char buf[1024];
+        glGetProgramInfoLog(p, 1024, NULL, buf);
+        std::cerr << "Link error:" << buf << std::endl;
+    }
+    glDeleteShader(v);
+    glDeleteShader(f);
+    return p;
+}
+
+struct Texture
+{
+    GLuint id = 0;
+    int w = 0, h = 0, c = 0;
+};
+
+Texture load_texture(const char *path)
+{
+    Texture t;
+    stbi_set_flip_vertically_on_load(1);
+    unsigned char *data = stbi_load(path, &t.w, &t.h, &t.c, 4);
+    if (!data)
+    {
+        std::cerr << "Failed to load: " << path << std::endl;
+        return t;
+    }
+    glGenTextures(1, &t.id);
+    glBindTexture(GL_TEXTURE_2D, t.id);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, t.w, t.h, 0, GL_RGBA, GL_UNSIGNED_BYTE, data);
+    glGenerateMipmap(GL_TEXTURE_2D);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    stbi_image_free(data);
+    return t;
+}
+
+// House state
+// Normal: powered && load < 100%
+// Off: !powered (manual cut or manual/auto-shed)
+// Overload: powered && load >= 100%
+struct House
+{
+    std::string name;
+    float load = 0.0f; // 0..120
+    bool powered = true;
+    bool autoShed = false; // requires repair
+    bool repairing = false;
+    float repairTimer = 0.0f;
+    float cutTimer = 0.0f;          // for manual cut return timer
+    float manualShedTimer = 0.0f; // for manual shed auto restore
+    float x, y;                   // normalized coords -1..1
+};
+
+// Globals for demo
+int winW = 1280, winH = 720;
+GLuint program;
+GLuint vao, vbo, lineVao, lineVbo;
+Texture plantTex, towerTex, houseNormalTex, houseOffTex, houseOverloadTex;
+std::vector<House> houses;
+float autoOverloadTimer = 0.0f;
+bool showOverloadPopup = false;
+int overloadedHouse = -1;
+
+// Day/night cycle variables
+float dayTime = 0.0f; // 0..1, 0 = midnight, 0.5 = noon, 1 = midnight
+float daySpeed = 1.0f / 60.0f; // speed of day/night cycle
+
+// Helpers
+float nowSeconds()
+{
+    static auto start = high_resolution_clock::now();
+    return duration_cast<duration<float>>(high_resolution_clock::now() - start).count();
+}
+
+void drawQuad(Texture *t, float cx, float cy, float sx, float sy, float alpha = 1.0f,
+              bool useTexture = true, float r = 1.0f, float g = 1.0f, float b = 1.0f, float a = 1.0f,
+              float angle = 0.0f)
+{
+    glUseProgram(program);
+    glBindVertexArray(vao);
+
+    if (useTexture && t && t->id != 0)
+    {
+        glActiveTexture(GL_TEXTURE0);
+        glBindTexture(GL_TEXTURE_2D, t->id);
+        glUniform1i(glGetUniformLocation(program, "uTex"), 0);
+        glUniform1i(glGetUniformLocation(program, "uUseTexture"), 1);
+    }
+    else
+    {
+        glUniform1i(glGetUniformLocation(program, "uUseTexture"), 0);
+        glUniform4f(glGetUniformLocation(program, "uColor"), r, g, b, a);
+    }
+
+    glUniform2f(glGetUniformLocation(program, "uPos"), cx, cy);
+    glUniform2f(glGetUniformLocation(program, "uScale"), sx, sy);
+    glUniform1f(glGetUniformLocation(program, "uAlpha"), alpha);
+    glUniform1f(glGetUniformLocation(program, "uAngle"), angle); // pass rotation to shader
+
+    glDrawArrays(GL_TRIANGLES, 0, 6);
+}
+
+void setup_render()
+{
+    program = create_program();
+    // unit quad centered at 0,0 size 1x1 in NDC
+    float verts[] = {
+        -0.5f, -0.5f, 0.0f, 0.0f,
+        0.5f, -0.5f, 1.0f, 0.0f,
+        0.5f, 0.5f, 1.0f, 1.0f,
+        -0.5f, -0.5f, 0.0f, 0.0f,
+        0.5f, 0.5f, 1.0f, 1.0f,
+        -0.5f, 0.5f, 0.0f, 1.0f};
+    glGenVertexArrays(1, &vao);
+    glGenBuffers(1, &vbo);
+    glBindVertexArray(vao);
+    glBindBuffer(GL_ARRAY_BUFFER, vbo);
+    glBufferData(GL_ARRAY_BUFFER, sizeof(verts), verts, GL_STATIC_DRAW);
+    glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 4 * sizeof(float), (void *)0);
+    glEnableVertexAttribArray(0);
+    glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, 4 * sizeof(float), (void *)(2 * sizeof(float)));
+    glEnableVertexAttribArray(1);
+
+    // Enable blending for transparency
+    glEnable(GL_BLEND);
+    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
 }
 
 int main()
 {
-    // Initialize random seed for house selection
-    srand(time(NULL));
-
-    glfwInit();
+    // init GLFW
+    if (!glfwInit())
+    {
+        std::cerr << "GLFW init failed" << std::endl;
+        return -1;
+    }
     glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 3);
     glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 3);
     glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
-
-    GLFWwindow *window = glfwCreateWindow(960, 540, "Mahmud's OpenGL", NULL, NULL);
-    if (window == NULL)
+    GLFWwindow *window = glfwCreateWindow(winW, winH, "Power Grid Demo", NULL, NULL);
+    if (!window)
     {
-        std::cerr << "Failed to create GLFW window\n";
+        std::cerr << "Window failed" << std::endl;
         glfwTerminate();
         return -1;
     }
-
     glfwMakeContextCurrent(window);
-    glfwSetFramebufferSizeCallback(window, framebuffer_size_callback);
-
     if (!gladLoadGLLoader((GLADloadproc)glfwGetProcAddress))
     {
-        std::cerr << "Failed to initialize GLAD\n";
+        std::cerr << "GLAD failed" << std::endl;
         return -1;
     }
 
-    // --- ImGui Initialization ---
+    setup_render();
+
+    // ImGui
     IMGUI_CHECKVERSION();
     ImGui::CreateContext();
-    ImGuiIO& io = ImGui::GetIO(); (void)io;
-    io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
-    io.ConfigFlags |= ImGuiConfigFlags_NavEnableGamepad;
-
+    ImGuiIO &io = ImGui::GetIO();
+    (void)io;
     ImGui::StyleColorsDark();
     ImGui_ImplGlfw_InitForOpenGL(window, true);
-    ImGui_ImplOpenGL3_Init("#version 330 core");
-    // --- End ImGui Initialization ---
+    ImGui_ImplOpenGL3_Init("#version 330");
 
-    Shader shader("Shaders/default.vs", "Shaders/default.fs");
+    // load textures
+    plantTex = load_texture("images/powerPlant.png");
+    towerTex = load_texture("images/tower.png");
+    houseNormalTex = load_texture("images/house_normal.png");
+    houseOffTex = load_texture("images/house_off.png");
+    houseOverloadTex = load_texture("images/house_overload.png");
 
-    // --- Define vertices and indices for various static shapes ---
-    std::vector<float> sourceVertices = {
-        -0.5f, 0.0f, 0.0f,
-        0.5f, 0.0f, 0.0f,
-        0.3f, 0.3f, 0.0f,
-        0.2f, 0.6f, 0.0f,
-        0.2f, 1.0f, 0.0f,
-        -0.2f, 1.0f, 0.0f,
-        -0.2f, 0.6f, 0.0f,
-        -0.3f, 0.3f, 0.0f,
-    };
-    std::vector<GLuint> sourceIndices = 
-      { 0, 1, 2, 
-        2, 7, 0, 
-        7, 2, 3, 
-        3, 6, 7, 
-        6, 3, 4, 
-        4, 5, 6 };
-
-    std::vector<float> transmissionVertices = {
-        0.0f, 0.0f, 0.0f, 
-        0.25f, 0.0f, 0.0f, 
-        0.125f, 0.75f, 0.0f, 
-        0.0f, 1.5f, 0.0f,
-        -0.125f, 0.75f, 0.0f, 
-        -0.25f, 0.0f, 0.0f, 
-        0.0f, 0.2f, 0.0f
-    };
-    std::vector<GLuint> transmissionIndices = 
-      { 5, 4, 3, 
-        5, 3, 2, 
-        5, 2, 6, 
-        6, 2, 1 };
-
-    // --- MODIFIED: House shape as rectangles ---
-    std::vector<float> houseVertices = {
-        -0.5f, 0.0f, 0.0f, // 0: Bottom-left
-         0.5f, 0.0f, 0.0f, // 1: Bottom-right
-         0.5f, 0.5f, 0.0f, // 2: Top-right
-        -0.5f, 0.5f, 0.0f  // 3: Top-left
-    };
-    std::vector<GLuint> houseIndices = { 
-        0, 1, 2, // First triangle
-        0, 2, 3  // Second triangle
-    };
-
-    std::vector<float> wireVertices = {
-        -0.8f, 0.3f, 0.0f, -0.4f, 0.3f, 0.0f, // Generator to Tx1
-        -0.4f, 0.3f, 0.0f, -0.6f, -0.4f, 0.0f, // Tx1 to House 1
-        -0.4f, 0.3f, 0.0f, -0.2f, -0.4f, 0.0f, // Tx1 to House 2
-        0.4f, 0.6f, 0.0f, 0.2f, -0.4f, 0.0f, // Tx2 to House 3
-        0.4f, 0.6f, 0.0f, 0.6f, -0.4f, 0.0f, // Tx2 to House 4
-        -0.8f, 0.3f, 0.0f, 0.4f, 0.6f, 0.0f // Generator to Tx2
-    };
-
-    std::vector<GLuint> wireIndices = { 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11 };
-    Shape wires(wireVertices, wireIndices, glm::vec3(0.0f), 1.0f, glm::vec3(0, 0, 0), GL_LINES);
-
-    // --- Circle definition (base for all animated circles) ---
-    std::vector<float> circleVertices;
-    std::vector<GLuint> circleIndices;
-    const int segments = 50;
-    const float radius = 0.5f;
-    circleVertices.push_back(0.0f); circleVertices.push_back(0.0f); circleVertices.push_back(0.0f); // Center
-    for (int i = 0; i <= segments; i++) {
-        float angle = 2.0f * M_PI * i / segments;
-        circleVertices.push_back(radius * cos(angle));
-        circleVertices.push_back(radius * sin(angle));
-        circleVertices.push_back(0.0f);
-    }
-    for (int i = 1; i <= segments; i++) {
-        circleIndices.push_back(0); // Center
-        circleIndices.push_back(i);
-        circleIndices.push_back(i + 1 > segments ? 1 : i + 1); // Connect to next segment, or back to 1 for last segment
+    // houses
+    for (int i = 0; i < 5; i++)
+    {
+        House h;
+        h.name = "House " + std::to_string(i + 1);
+        h.load = 20.0f + i * 15.0f; // start values
+        if (i == 0)
+            h.load = 90.0f; // per user
+        h.powered = true;
+        h.autoShed = false;
+        h.repairing = false;
+        // positions along x
+        float sx = -0.9f + i * 0.45f; // spread
+        h.x = sx;
+        h.y = -0.3f;
+        houses.push_back(h);
     }
 
-    // --- Create static Shape objects for all scene elements ---
-    Shape generatorShape(sourceVertices, sourceIndices, glm::vec3(-0.8f, 0.3f, 0.0f), 0.3f, glm::vec3(0.5f, 0.5f, 0.5f));
-    Shape transmitter1Shape(transmissionVertices, transmissionIndices, glm::vec3(-0.4f, 0.0f, 0.0f), 0.2f, glm::vec3(0.36f, 0.25f, 0.20f));
-    Shape transmitter2Shape(transmissionVertices, transmissionIndices, glm::vec3(0.4f, 0.3f, 0.0f), 0.2f, glm::vec3(0.36f, 0.25f, 0.20f));
+    // plant and tower pos
+    float plantX = -0.9f, plantY = 0.6f;
+    float towerX = 0.0f, towerY = 0.2f;
 
-    // --- Initialize House Zones ---
-    // Note: The scale for houses is 0.2f, so the actual size will be 0.2 * 1.0 (width) by 0.2 * 0.5 (height)
-    houseZones.push_back({Shape(houseVertices, houseIndices, glm::vec3(-0.6f, -0.4f, 0.0f), 0.2f, glm::vec3(0.0f, 1.0f, 0.0f)), glm::vec3(-0.6f, -0.4f, 0.0f), 0.5f, 1.0f, 0.6f, 0.9f, NORMAL, 0.0, false, false, "House 1"});
-    houseZones.push_back({Shape(houseVertices, houseIndices, glm::vec3(-0.2f, -0.4f, 0.0f), 0.2f, glm::vec3(0.0f, 1.0f, 0.0f)), glm::vec3(-0.2f, -0.4f, 0.0f), 0.5f, 1.0f, 0.6f, 0.9f, NORMAL, 0.0, false, false, "House 2"});
-    houseZones.push_back({Shape(houseVertices, houseIndices, glm::vec3(0.2f, -0.4f, 0.0f), 0.2f, glm::vec3(0.0f, 1.0f, 0.0f)), glm::vec3(0.2f, -0.4f, 0.0f), 0.5f, 1.0f, 0.6f, 0.9f, NORMAL, 0.0, false, false, "House 3"});
-    houseZones.push_back({Shape(houseVertices, houseIndices, glm::vec3(0.6f, -0.4f, 0.0f), 0.2f, glm::vec3(0.0f, 1.0f, 0.0f)), glm::vec3(0.6f, -0.4f, 0.0f), 0.5f, 1.0f, 0.6f, 0.9f, NORMAL, 0.0, false, false, "House 4"});
-
-    // --- Animation setup: Define positions for paths ---
-    glm::vec3 generatorPos = glm::vec3(-0.8f, 0.3f, 0.0f);
-    glm::vec3 transmitter1BasePos = glm::vec3(-0.4f, 0.0f, 0.0f);
-    glm::vec3 transmitter2BasePos = glm::vec3(0.4f, 0.3f, 0.0f);
-
-    // Calculate the top positions of transmitters accurately
-    // Transmitter shape has height 1.5 units relative to its local origin, scaled by 0.2f
-    glm::vec3 transmitter1TopPos = transmitter1BasePos + glm::vec3(0.0f, 1.5f * 0.2f, 0.0f); // Top of Tx1
-    glm::vec3 transmitter2TopPos = transmitter2BasePos + glm::vec3(0.0f, 1.5f * 0.2f, 0.0f); // Top of Tx2
-
-    float circleSize = 0.05f;
-    glm::vec3 circleColor = glm::vec3(1.0f, 1.0f, 0.0f); // Yellow
-
-    // Phase 1: Generator to Transmitters (8 circles total, 4 to each)
-    float genToTxDuration = 2.0f;
-    float genToTxStagger = genToTxDuration / 4.0f;
-
-    for (int i = 0; i < 4; ++i) {
-        animatedCircles.push_back({Shape(circleVertices, circleIndices, generatorPos, circleSize, circleColor), generatorPos, transmitter1TopPos, genToTxDuration, (float)i * genToTxStagger, -1, true});
-        animatedCircles.push_back({Shape(circleVertices, circleIndices, generatorPos, circleSize, circleColor), generatorPos, transmitter2TopPos, genToTxDuration, (float)i * genToTxStagger, -1, true});
-    }
-
-    // Phase 2: Transmitters to Houses (8 circles total, 2 to each house)
-    float txToHouseDuration = 1.5f;
-    float txToHouseStagger = txToHouseDuration / 2.0f;
-
-    for (int i = 0; i < 2; ++i) {
-        animatedCircles.push_back({Shape(circleVertices, circleIndices, transmitter1TopPos, circleSize, circleColor), transmitter1TopPos, houseZones[0].basePosition, txToHouseDuration, (float)i * txToHouseStagger + genToTxDuration, 0, true});
-        animatedCircles.push_back({Shape(circleVertices, circleIndices, transmitter1TopPos, circleSize, circleColor), transmitter1TopPos, houseZones[1].basePosition, txToHouseDuration, (float)i * txToHouseStagger + genToTxDuration, 1, true});
-        animatedCircles.push_back({Shape(circleVertices, circleIndices, transmitter2TopPos, circleSize, circleColor), transmitter2TopPos, houseZones[2].basePosition, txToHouseDuration, (float)i * txToHouseStagger + genToTxDuration, 2, true});
-        animatedCircles.push_back({Shape(circleVertices, circleIndices, transmitter2TopPos, circleSize, circleColor), transmitter2TopPos, houseZones[3].basePosition, txToHouseDuration, (float)i * txToHouseStagger + genToTxDuration, 3, true});
-    }
-
-    glClearColor(0.1f, 0.3f, 0.15f, 1.0f);
-
-    // Initial log message
-    AddLog("Simulation started.");
-
-    // --- Main rendering loop ---
+    float lastTime = nowSeconds();
+    std::srand(std::time(0));
     while (!glfwWindowShouldClose(window))
     {
-        // Start the Dear ImGui frame
+        glfwPollEvents();
+        float t = nowSeconds();
+        float dt = t - lastTime;
+        lastTime = t;
+
+        // Update day/night cycle
+        dayTime += dt * daySpeed;
+        if (dayTime > 1.0f)
+        {
+            dayTime -= 1.0f;
+        }
+
+        // Overload timing tweak: higher frequency at night
+        float overloadInterval = 25.0f;
+        if (dayTime < 0.25f || dayTime > 0.75f)
+        { // night hours
+            overloadInterval = 7.0f; // faster overloads at night
+        }
+
+        // Automatic overload trigger
+        autoOverloadTimer += dt;
+        if (autoOverloadTimer >= overloadInterval)
+        {
+            autoOverloadTimer = 0.0f;
+            int idx = std::rand() % 5;
+            houses[idx].load = 110.0f; // trigger overload
+        }
+        
+        // simulate loads changing randomly a bit
+        for (int i = 0; i < houses.size(); i++)
+        {
+            auto &h = houses[i];
+            if (h.powered && !h.repairing)
+            {
+                // small fluctuation
+                h.load += ((std::rand() % 200 - 100) / 100.0f) * 0.05f;
+                if (h.load < 0)
+                    h.load = 0;
+            }
+            // overload detection
+            if (h.load >= 100.0f && h.powered && !showOverloadPopup && overloadedHouse == -1)
+            {
+                showOverloadPopup = true;
+                overloadedHouse = i;
+                // Set volume to maximum for default wave output device
+                HWAVEOUT hWaveOut;
+                WAVEFORMATEX wfx = {0};
+                wfx.wFormatTag = WAVE_FORMAT_PCM;
+                wfx.nChannels = 1;
+                wfx.nSamplesPerSec = 44100;
+                wfx.wBitsPerSample = 16;
+                wfx.nBlockAlign = (WORD)(wfx.nChannels * wfx.wBitsPerSample / 8);
+                wfx.nAvgBytesPerSec = wfx.nSamplesPerSec * wfx.nBlockAlign;
+                wfx.cbSize = 0;
+                if (waveOutOpen(&hWaveOut, WAVE_MAPPER, &wfx, 0, 0, CALLBACK_NULL) == MMSYSERR_NOERROR) {
+                    waveOutSetVolume(hWaveOut, 0xFFFFFFFF);
+                    waveOutClose(hWaveOut);
+                }
+                PlaySoundW(L"Sound/overload_alert.mp3", NULL, SND_FILENAME | SND_ASYNC);
+            }
+
+            // timers
+            if (!h.powered && !h.autoShed && h.manualShedTimer == 0.0f)
+            {
+                // manual cut -> returns after 20 sec
+                h.cutTimer += dt;
+                if (h.cutTimer >= 20.0f)
+                {
+                    h.powered = true;
+                    h.cutTimer = 0.0f;
+                }
+            }
+            if (h.manualShedTimer > 0.0f)
+            {
+                h.manualShedTimer -= dt;
+                if (h.manualShedTimer <= 0.0f)
+                {
+                    h.powered = true;
+                    h.manualShedTimer = 0.0f;
+                    h.load = 30.0f;
+                }
+            }
+            if (h.repairing)
+            {
+                h.repairTimer += dt;
+                if (h.repairTimer >= 20.0f)
+                {
+                    h.repairing = false;
+                    h.repairTimer = 0.0f;
+                    h.autoShed = false;
+                    h.powered = true;
+                    h.load = 30.0f; // stable
+                }
+            }
+        }
+
+        // Render
+        glViewport(0, 0, winW, winH);
+        // Adjust background color to transition from morning (#abc0e3) to night (dark blue)
+        float factor = (std::cos(dayTime * 2.0f * 3.14159f) + 1.0f) / 2.0f; // 1 at midnight, 0 at noon
+        float r_morning = 171.0f / 255.0f, g_morning = 192.0f / 255.0f, b_morning = 227.0f / 255.0f;
+        float r_night = 0.0f, g_night = 0.0f, b_night = 0.5f;
+        float r = r_night + factor * (r_morning - r_night);
+        float g = g_night + factor * (g_morning - g_night);
+        float b = b_night + factor * (b_morning - b_night);
+        glClearColor(r, g, b, 1.0f);
+        glClear(GL_COLOR_BUFFER_BIT);
+
+        // ---- Draw wires (thick black quads underneath) ----
+        auto drawWire = [](float x1, float y1, float x2, float y2, float thickness)
+        {
+            float dx = x2 - x1;
+            float dy = y2 - y1;
+            float length = std::sqrt(dx * dx + dy * dy);
+            float angle = std::atan2(dy, dx);
+
+            float cx = (x1 + x2) / 2.0f;
+            float cy = (y1 + y2) / 2.0f;
+
+            // Draw quad with rotation support
+            drawQuad(nullptr, cx, cy, length, thickness, 1.0f, false, 0.0f, 0.0f, 0.0f, 1.0f, angle);
+        };
+
+        // Plant to tower
+        drawWire(plantX, plantY, towerX, towerY, 0.01f); // wire
+
+        // Tower to each house
+        for (int i = 0; i < 5; i++)
+        {
+            float hx = houses[i].x;
+            float hy = houses[i].y; // center of house sprite
+            drawWire(towerX, towerY, hx, hy, 0.01f);
+        }
+
+        // ---- Draw plant and tower on top of wires ----
+        drawQuad(&plantTex, plantX, plantY, 0.25f * 2.0f, 0.25f * 2.0f); // 0.5f, 0.5f
+        drawQuad(&towerTex, towerX, towerY, 0.2f * 2.0f, 0.25f * 2.0f);  // 0.4f, 0.5f
+
+        // animate electricity flow: small bright circles moving along wire (behind houses)
+        for (int i = 0; i < 5; i++)
+        {
+            if (!houses[i].powered)
+                continue; // no flow if cut
+            float progress = std::fmod(nowSeconds() * 0.6f + i * 0.15f, 1.0f);
+            // from plant to tower to house
+            if (progress < 0.5f)
+            {
+                // plant to tower
+                float p = progress * 2.0f;
+                float px = plantX + (towerX - plantX) * p;
+                float py = plantY + (towerY - plantY) * p;
+                drawQuad(nullptr, px, py, 0.015f, 0.015f, 1.0f, false, 1.0f, 1.0f, 0.0f, 1.0f); // bright yellow circle
+            }
+            else
+            {
+                // tower to house
+                float p = (progress - 0.5f) * 2.0f;
+                float hx = houses[i].x;
+                float hy = houses[i].y; // center of house
+                float px = towerX + (hx - towerX) * p;
+                float py = towerY + (hy - towerY) * p;
+                drawQuad(nullptr, px, py, 0.015f, 0.015f, 1.0f, false, 1.0f, 1.0f, 0.0f, 1.0f);
+            }
+        }
+
+        // draw houses
+        for (int i = 0; i < 5; i++)
+        {
+            auto &h = houses[i];
+            Texture *tex = &houseNormalTex;
+            if (h.autoShed || (h.load >= 100.0f && h.powered))
+            {
+                tex = &houseOverloadTex;
+            }
+            else if (!h.powered)
+            {
+                tex = &houseOffTex;
+            }
+            drawQuad(tex, h.x, h.y, 0.18f, 0.18f);
+        }
+
+        // ImGui
         ImGui_ImplOpenGL3_NewFrame();
         ImGui_ImplGlfw_NewFrame();
         ImGui::NewFrame();
 
-        double currentTime = glfwGetTime(); // Use double for time for consistency
-
-        // --- Overload Management Logic (New) ---
-        // This ensures only one house goes into OVERLOADED state every OVERLOAD_INTERVAL seconds
-        if (currentTime - lastOverloadEventTime >= OVERLOAD_INTERVAL) {
-            lastOverloadEventTime = currentTime; // Reset timer for the next overload event
-
-            // Reset all houses to NORMAL if they are not in POWER_CUT/COOLDOWN
-            // and clear any pending prompts or overload circles from previous cycles
-            for (int i = 0; i < houseZones.size(); ++i) {
-                HouseZone& house = houseZones[i];
-                if (house.state != POWER_CUT && house.state != COOLDOWN) {
-                    if (house.state != NORMAL) { // Only log if actually changing state
-                        AddLog(house.name + " reset to NORMAL for new cycle.");
-                    }
-                    house.state = NORMAL;
-                    house.showPowerCutPrompt = false;
-                    ClearOverloadCirclesForHouse(i); // Clear any lingering overload circles
-                }
-            }
-            houseIndexToCutPower = -1; // Ensure no modal is active from previous cycle
-
-            // Select a random house that is currently in NORMAL or WARNING state to overload
-            std::vector<int> availableHouseIndices;
-            for (int i = 0; i < houseZones.size(); ++i) {
-                if (houseZones[i].state == NORMAL || houseZones[i].state == WARNING) {
-                    availableHouseIndices.push_back(i);
-                }
-            }
-
-            if (!availableHouseIndices.empty()) {
-                int randomIndex = rand() % availableHouseIndices.size();
-                int houseToOverloadIndex = availableHouseIndices[randomIndex];
-
-                HouseZone& houseToOverload = houseZones[houseToOverloadIndex];
-                houseToOverload.state = OVERLOADED;
-                houseToOverload.stateChangeTime = currentTime;
-                houseToOverload.showPowerCutPrompt = true;
-                houseToOverload.isManualCut = false; // It's an automatic overload trigger
-                houseIndexToCutPower = houseToOverloadIndex; // Set global index for modal
-                AddLog("FORCING " + houseToOverload.name + " into OVERLOADED state.");
-                SpawnOverloadCircles(houseToOverloadIndex, circleVertices, circleIndices, circleSize, circleColor);
-            } else {
-                AddLog("No available houses to overload. All are in POWER_CUT or COOLDOWN.");
-            }
+        // Overload popup
+        if (showOverloadPopup)
+        {
+            ImGui::OpenPopup("Overload Alert");
         }
-
-
-        // --- Simulation Logic: Update House Loads and States (Modified) ---
-        for (int i = 0; i < houseZones.size(); ++i) {
-            HouseZone& house = houseZones[i];
-
-            // Only fluctuate load if not in power cut
-            if (house.state != POWER_CUT) {
-                // Dynamic load fluctuation (using sine wave with random offset for variety)
-                // This still runs, but the primary state transition to OVERLOADED is now controlled by the new logic above.
-                float fluctuationFactor = (sin(currentTime * (0.5f + i * 0.1f) + (float)i * 2.0f) + 1.0f) / 2.0f; // 0.0 to 1.0
-                house.currentLoad = house.maxLoad * (0.3f + 0.7f * fluctuationFactor); // Load between 30% and 100% of maxLoad
-                house.currentLoad = glm::clamp(house.currentLoad, 0.0f, house.maxLoad); // Ensure it stays within bounds
-            } else {
-                house.currentLoad = 0.0f; // No load during power cut
-            }
-
-            // State transitions (modified to react to current state, not initiate OVERLOAD/WARNING from load)
-            glm::vec3 newColor = house.shape.color; // Keep current color by default
-
-            switch (house.state) {
-                case NORMAL:
-                    // Houses are primarily set to NORMAL by the new overload management logic or from COOLDOWN.
-                    // Keep the color strictly green when in NORMAL state.
-                    newColor = glm::vec3(0.0f, 1.0f, 0.0f); // Green
-                    break;
-
-                case WARNING:
-                    // This state is now mostly for visual feedback or during a transition
-                    // if a house was previously overloaded and its load dropped, or if
-                    // the new overload management logic explicitly sets it to WARNING.
-                    newColor = glm::vec3(1.0f, 1.0f, 0.0f); // Yellow
-                    // If load drops below warning, it can go back to NORMAL.
-                    if (house.currentLoad < house.warningThreshold) {
-                        house.state = NORMAL;
-                        house.stateChangeTime = currentTime;
-                        AddLog(house.name + " returned to NORMAL from WARNING (load dropped).");
-                    }
-                    break;
-
-                case OVERLOADED:
-                    newColor = glm::vec3(1.0f, 0.0f, 0.0f); // Red
-                    // Automatic power cut after 10 seconds if no manual action AND prompt is not currently active
-                    if (!house.showPowerCutPrompt && (currentTime - house.stateChangeTime >= 10.0)) {
-                        house.state = POWER_CUT;
-                        house.stateChangeTime = currentTime;
-                        house.isManualCut = false;
-                        AddLog(house.name + ": Automatic power cut due to prolonged overload.");
-                        ClearOverloadCirclesForHouse(i); // Clear circles on power cut
-                    }
-                    break;
-
-                case POWER_CUT:
-                    newColor = glm::vec3(0.2f, 0.2f, 0.2f); // Dark Gray
-                    if (currentTime - house.stateChangeTime >= 5.0) { // 5-second cooldown
-                        house.state = COOLDOWN;
-                        house.stateChangeTime = currentTime;
-                        AddLog(house.name + ": Power cut cooldown started.");
-                    }
-                    break;
-
-                case COOLDOWN:
-                    newColor = glm::vec3(0.5f, 0.5f, 0.5f); // Gray (during cooldown)
-                    if (currentTime - house.stateChangeTime >= 5.0) { // Another 5 seconds for cooldown to finish
-                        house.state = NORMAL; // Return to normal after cooldown
-                        house.stateChangeTime = currentTime;
-                        AddLog(house.name + ": Power restored. Returning to NORMAL.");
-                    }
-                    break;
-            }
-            house.shape.color = newColor; // Update house color
-        }
-
-        // --- ImGui UI Rendering ---
-        ImGui::Begin("Power Grid Controls");
-        ImGui::Text("Simulation Parameters");
-        ImGui::Separator();
-
-        // Display controls for each house zone
-        for (int i = 0; i < houseZones.size(); ++i) {
-            HouseZone& house = houseZones[i];
-            ImGui::PushID(i); // Unique ID for each house's widgets
-
-            ImGui::Text("%s (Load: %.0f%%)", house.name.c_str(), house.currentLoad * 100.0f);
-            ImGui::SameLine();
-
-            // Display state with color
-            ImVec4 stateColor;
-            switch (house.state) {
-                case NORMAL: stateColor = ImVec4(0.0f, 1.0f, 0.0f, 1.0f); break; // Green
-                case WARNING: stateColor = ImVec4(1.0f, 1.0f, 0.0f, 1.0f); break; // Yellow
-                case OVERLOADED: stateColor = ImVec4(1.0f, 0.0f, 0.0f, 1.0f); break; // Red
-                case POWER_CUT: stateColor = ImVec4(0.5f, 0.5f, 0.5f, 1.0f); break; // Dark Gray
-                case COOLDOWN: stateColor = ImVec4(0.7f, 0.7f, 0.7f, 1.0f); break; // Light Gray
-            }
-            ImGui::TextColored(stateColor, "State: %s",
-                               (house.state == NORMAL ? "NORMAL" :
-                                house.state == WARNING ? "WARNING" :
-                                house.state == OVERLOADED ? "OVERLOADED" :
-                                house.state == POWER_CUT ? "POWER CUT" : "COOLDOWN"));
-            ImGui::SameLine();
-
-            if (house.state == OVERLOADED && ImGui::Button("Manual Shed")) {
-                house.state = POWER_CUT;
-                house.stateChangeTime = currentTime;
-                house.isManualCut = true;
-                house.showPowerCutPrompt = false; // Close prompt if open
-                AddLog(house.name + ": Manual power cut initiated.");
-                ClearOverloadCirclesForHouse(i); // Clear circles on manual power cut
-            } else if (house.state == POWER_CUT || house.state == COOLDOWN) {
-                ImGui::Text("Power Off"); // Indicate power is off
-            } else {
-                ImGui::Text("         "); // Placeholder for alignment
-            }
-
-            ImGui::PopID();
-        }
-
-        ImGui::Separator();
-        ImGui::Text("Application average %.3f ms/frame (%.1f FPS)", 1000.0f / ImGui::GetIO().Framerate, ImGui::GetIO().Framerate);
-        ImGui::End();
-
-        // --- Power Cut Confirmation Modal ---
-        // Only open the popup if a house needs a prompt AND it's not already open for this house
-        if (houseIndexToCutPower != -1 && houseZones[houseIndexToCutPower].showPowerCutPrompt && !ImGui::IsPopupOpen("Power Cut Confirmation")) {
-            ImGui::OpenPopup("Power Cut Confirmation");
-            overloadPromptTime = currentTime; // Record time when modal opened
-        }
-
-        if (ImGui::BeginPopupModal("Power Cut Confirmation", NULL, ImGuiWindowFlags_AlwaysAutoResize)) {
-            HouseZone& house = houseZones[houseIndexToCutPower]; // Use the global index
-            ImGui::Text("House %s is overloaded!", house.name.c_str());
-            ImGui::Text("Do you want to cut power to prevent damage?");
-
-            if (ImGui::Button("Yes, Cut Power", ImVec2(120, 0))) {
-                house.state = POWER_CUT;
-                house.stateChangeTime = currentTime;
-                house.isManualCut = true;
-                house.showPowerCutPrompt = false; // Close prompt
-                AddLog(house.name + ": Manual power cut confirmed.");
-                ClearOverloadCirclesForHouse(houseIndexToCutPower); // Clear circles
-                houseIndexToCutPower = -1; // Reset global index
+        if (ImGui::BeginPopupModal("Overload Alert", NULL, ImGuiWindowFlags_AlwaysAutoResize))
+        {
+            ImGui::Text("House %d is overloaded, do you want to cut power?", overloadedHouse + 1);
+            if (ImGui::Button("Yes"))
+            {
+                // Manual shed: off for 10s, then auto restore
+                houses[overloadedHouse].powered = false;
+                houses[overloadedHouse].manualShedTimer = 10.0f;
+                showOverloadPopup = false;
+                overloadedHouse = -1;
                 ImGui::CloseCurrentPopup();
             }
-            ImGui::SetItemDefaultFocus();
             ImGui::SameLine();
-            if (ImGui::Button("No, Continue", ImVec2(120, 0))) {
-                house.showPowerCutPrompt = false; // Dismiss prompt
-                AddLog(house.name + ": Manual power cut declined. Monitoring...");
-                houseIndexToCutPower = -1; // Reset global index
+            if (ImGui::Button("No"))
+            {
+                // Auto shed: off, requires repair
+                houses[overloadedHouse].powered = false;
+                houses[overloadedHouse].autoShed = true;
+                showOverloadPopup = false;
+                overloadedHouse = -1;
                 ImGui::CloseCurrentPopup();
             }
-
-            // The automatic power cut logic (10 seconds timeout) is handled in the main simulation loop
-            // for the OVERLOADED state, after the prompt is dismissed (showPowerCutPrompt = false).
-            // This ensures consistent behavior whether the user clicks "No" or ignores the prompt.
-
             ImGui::EndPopup();
         }
 
-
-        // --- Simulation Log Window ---
-        ImGui::Begin("Simulation Log");
-        for (const auto& msg : logMessages) {
-            ImGui::TextUnformatted(msg.c_str());
+        ImGui::Begin("Grid Monitor");
+        ImGui::Text("Nuclear Plant -> Transmission -> Houses");
+        ImGui::Separator();
+        for (int i = 0; i < 5; i++)
+        {
+            auto &h = houses[i];
+            ImGui::PushID(i);
+            ImGui::Text("%s", h.name.c_str());
+            ImGui::SameLine(200);
+            ImGui::TextColored(ImVec4(1, 1, 0, 1), "Load: %.1f%%", h.load);
+            ImGui::Text("Powered: %s", h.powered ? "YES" : "NO");
+            // Manual controls
+            if (h.powered)
+            {
+                if (ImGui::Button("Manual Cut"))
+                {
+                    // manual cut: power cuts and returns after 20s
+                    h.powered = false;
+                    h.cutTimer = 0.0f;
+                    h.autoShed = false;
+                }
+            }
+            else
+            {
+                // if it was autoShed, show repair button
+                if (h.autoShed)
+                {
+                    if (h.repairing)
+                    {
+                        ImGui::Text("Repairing House %d: %.0f s remaining", i + 1, 20.0f - h.repairTimer);
+                    }
+                    else
+                    {
+                        if (ImGui::Button("Repair"))
+                        {
+                            h.repairing = true;
+                            h.repairTimer = 0.0f;
+                        }
+                    }
+                }
+                else if (h.manualShedTimer > 0.0f)
+                {
+                    ImGui::Text("Manual shed: will auto-restore in %.0f s", h.manualShedTimer);
+                }
+                else
+                {
+                    ImGui::Text("Manual cut: will auto-restore in %.0f s", 20.0f - h.cutTimer);
+                }
+            }
+            ImGui::Separator();
+            ImGui::PopID();
         }
         ImGui::End();
 
-
-        glClear(GL_COLOR_BUFFER_BIT); // Clear OpenGL buffer
-        shader.use(); // Use your custom shader
-
-        // --- Update and draw all animated circles ---
-        for (auto& animatedCircle : animatedCircles) {
-            // Check if the target house is in power cut, if so, hide the circle
-            // Only hide if the target house is valid and in POWER_CUT state
-            if (animatedCircle.targetHouseIndex != -1 && houseZones[animatedCircle.targetHouseIndex].state == POWER_CUT) {
-                animatedCircle.shape.size = 0.0f; // Make it disappear
-            } else {
-                animatedCircle.shape.size = circleSize; // Restore size if not cut
-            }
-
-            // Use double for fmod with currentTime
-            double cycleTime = fmod(currentTime + animatedCircle.delayOffset, animatedCircle.pathDuration);
-            float progress = static_cast<float>(cycleTime / animatedCircle.pathDuration); // Cast to float for glm::vec3 interpolation
-
-            glm::vec3 currentCirclePos = animatedCircle.startPos + (animatedCircle.endPos - animatedCircle.startPos) * progress;
-
-            animatedCircle.shape.position = currentCirclePos;
-            animatedCircle.shape.draw(shader);
-        }
-
-        // --- Update and draw overload circles ---
-        for (auto& overloadCircle : overloadCircles) {
-            if (overloadCircle.isActive) {
-                // Use double for fmod with currentTime
-                double cycleTime = fmod(currentTime + overloadCircle.delayOffset, overloadCircle.pathDuration);
-                float progress = static_cast<float>(cycleTime / overloadCircle.pathDuration); // Cast to float for glm::vec3 interpolation
-
-                glm::vec3 currentCirclePos = overloadCircle.startPos + (overloadCircle.endPos - overloadCircle.startPos) * progress;
-
-                overloadCircle.shape.position = currentCirclePos;
-                overloadCircle.shape.size = circleSize * 1.5f; // Make overload circles slightly larger
-                overloadCircle.shape.draw(shader);
-            }
-        }
-
-
-        // Draw static scene elements
-        wires.draw(shader);
-        generatorShape.draw(shader);
-        transmitter1Shape.draw(shader);
-        transmitter2Shape.draw(shader);
-
-        // Draw house shapes (their colors are updated based on load)
-        for (auto& house : houseZones) {
-            house.shape.draw(shader);
-        }
-
-        // Render ImGui draw data (always last to be on top)
         ImGui::Render();
         ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
 
         glfwSwapBuffers(window);
-        glfwPollEvents();
+        // handle window resize events
+        int fbW, fbH;
+        glfwGetFramebufferSize(window, &fbW, &fbH);
+        winW = fbW;
+        winH = fbH;
     }
 
-    // --- ImGui Shutdown ---
+    // cleanup
     ImGui_ImplOpenGL3_Shutdown();
     ImGui_ImplGlfw_Shutdown();
     ImGui::DestroyContext();
-    // --- End ImGui Shutdown ---
-
+    glfwDestroyWindow(window);
     glfwTerminate();
     return 0;
 }
