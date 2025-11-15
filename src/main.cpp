@@ -18,6 +18,9 @@
 #include <cmath>
 #include <fstream>
 #include <random>
+#include <cstring>
+#include <cstdlib>
+#include <ctime>
 
 #include <windows.h>
 #include <mmsystem.h>
@@ -119,21 +122,58 @@ struct House
     float cutTimer = 0.0f;          // for manual cut return timer
     float manualShedTimer = 0.0f; // for manual shed auto restore
     float x, y;                   // normalized coords -1..1
+    float credit = 100.0f;        // credits for billing
 };
+
+std::vector<House> houses;
+
 
 // Globals for demo
 int winW = 1280, winH = 720;
 GLuint program;
 GLuint vao, vbo, lineVao, lineVbo;
 Texture plantTex, towerTex, houseNormalTex, houseOffTex, houseOverloadTex;
-std::vector<House> houses;
 float autoOverloadTimer = 0.0f;
 bool showOverloadPopup = false;
 int overloadedHouse = -1;
+bool showDepositPopup = false;
+int depositHouse = -1;
 
 // Day/night cycle variables
 float dayTime = 0.0f; // 0..1, 0 = midnight, 0.5 = noon, 1 = midnight
 float daySpeed = 1.0f / 60.0f; // speed of day/night cycle
+float prevDayTime = 0.0f;
+
+void saveCredits()
+{
+    std::ofstream file("credits.txt");
+    for (int i = 0; i < 5; i++)
+        file << "House " << (i + 1) << " : " << houses[i].credit << std::endl;
+}
+
+void loadCredits()
+{
+    std::ifstream file("credits.txt");
+    if (!file)
+    {
+        for (auto &h : houses)
+            h.credit = 100.0f;
+        saveCredits();
+        return;
+    }
+    std::string line;
+    int i = 0;
+    while (std::getline(file, line) && i < 5)
+    {
+        size_t pos = line.find(':');
+        if (pos != std::string::npos)
+        {
+            std::string credStr = line.substr(pos + 1);
+            houses[i].credit = std::stof(credStr);
+        }
+        i++;
+    }
+}
 
 // Helpers
 float nowSeconds()
@@ -256,6 +296,7 @@ int main()
         h.y = -0.3f;
         houses.push_back(h);
     }
+    loadCredits();
 
     // plant and tower pos
     float plantX = -0.9f, plantY = 0.6f;
@@ -275,6 +316,32 @@ int main()
         if (dayTime > 1.0f)
         {
             dayTime -= 1.0f;
+        }
+
+        // Billing: deduct 20 credits per day
+        if (dayTime < prevDayTime)
+        {
+            for (auto &h : houses)
+            {
+                h.credit -= 20.0f;
+                if (h.credit < 0.0f)
+                    h.credit = 0.0f;
+                if (h.credit <= 0.0f)
+                    h.powered = false;
+            }
+            saveCredits();
+        }
+        prevDayTime = dayTime;
+
+        // Check for deposit needed
+        for (int i = 0; i < 5; i++)
+        {
+            if (houses[i].credit <= 0.0f && !showDepositPopup && depositHouse == -1)
+            {
+                showDepositPopup = true;
+                depositHouse = i;
+                break; // only one at a time
+            }
         }
 
         // Overload timing tweak: higher frequency at night
@@ -363,15 +430,26 @@ int main()
 
         // Render
         glViewport(0, 0, winW, winH);
-        // Adjust background color to transition from morning (#abc0e3) to night (dark blue)
-        float factor = (std::cos(dayTime * 2.0f * 3.14159f) + 1.0f) / 2.0f; // 1 at midnight, 0 at noon
-        float r_morning = 171.0f / 255.0f, g_morning = 192.0f / 255.0f, b_morning = 227.0f / 255.0f;
+        // Adjust background color to transition from night (dark blue) to day (light blue)
+        float factor = std::sin(dayTime * 3.14159f); // 0 at midnight, 1 at noon
         float r_night = 0.0f, g_night = 0.0f, b_night = 0.5f;
-        float r = r_night + factor * (r_morning - r_night);
-        float g = g_night + factor * (g_morning - g_night);
-        float b = b_night + factor * (b_morning - b_night);
+        float r_day = 171.0f / 255.0f, g_day = 192.0f / 255.0f, b_day = 227.0f / 255.0f;
+        float r = r_night + factor * (r_day - r_night);
+        float g = g_night + factor * (g_day - g_night);
+        float b = b_night + factor * (b_day - b_night);
         glClearColor(r, g, b, 1.0f);
         glClear(GL_COLOR_BUFFER_BIT);
+
+        // Draw sun (whitish yellow circle)
+        float aspect = (float)winW / winH;
+        float sunX = (dayTime - 0.5f) * 2.0f;
+        float sunY = 1.0f * std::sin(dayTime * 3.14159f) - 0.1f;
+        float sunSx = 0.11f;
+        float sunSy = 0.2f;
+        drawQuad(nullptr, sunX, sunY, sunSx, sunSy, 1.0f, false, 1.0f, 1.0f, 0.8f, 1.0f);
+
+        // Draw ground (grass green rectangle)
+        drawQuad(nullptr, 0.0f, -0.6f, 5.0f, 2.2f, 1.0f, false, 0.0f, 0.5f, 0.0f, 1.0f);
 
         // ---- Draw wires (thick black quads underneath) ----
         auto drawWire = [](float x1, float y1, float x2, float y2, float thickness)
@@ -451,6 +529,16 @@ int main()
         ImGui_ImplGlfw_NewFrame();
         ImGui::NewFrame();
 
+        // Clock display
+        ImGui::SetNextWindowPos(ImVec2(10, 10));
+        ImGui::SetNextWindowSize(ImVec2(100, 50));
+        ImGui::Begin("Clock", NULL, ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse | ImGuiWindowFlags_NoCollapse);
+        float totalHours = dayTime * 24.0f;
+        int hours = (int)totalHours % 24;
+        int minutes = (int)((totalHours - std::floor(totalHours)) * 60.0f);
+        ImGui::Text("%02d:%02d", hours, minutes);
+        ImGui::End();
+
         // Overload popup
         if (showOverloadPopup)
         {
@@ -480,7 +568,34 @@ int main()
             }
             ImGui::EndPopup();
         }
-
+        
+        // Deposit popup
+        if (showDepositPopup)
+        {
+            ImGui::OpenPopup("Deposit Required");
+        }
+        if (ImGui::BeginPopupModal("Deposit Required", NULL, ImGuiWindowFlags_AlwaysAutoResize))
+        {
+            ImGui::Text("House %d has no credits. Enter deposit amount:", depositHouse + 1);
+            static char buf[32] = "";
+            ImGui::InputText("Amount", buf, sizeof(buf), ImGuiInputTextFlags_CharsDecimal);
+            if (ImGui::Button("Deposit"))
+            {
+                float amount = std::atof(buf);
+                if (amount > 0)
+                {
+                    houses[depositHouse].credit += amount;
+                    saveCredits();
+                    houses[depositHouse].powered = true;
+                    showDepositPopup = false;
+                    depositHouse = -1;
+                    memset(buf, 0, sizeof(buf));
+                    ImGui::CloseCurrentPopup();
+                }
+            }
+            ImGui::EndPopup();
+        }
+        
         ImGui::Begin("Grid Monitor");
         ImGui::Text("Nuclear Plant -> Transmission -> Houses");
         ImGui::Separator();
@@ -489,8 +604,8 @@ int main()
             auto &h = houses[i];
             ImGui::PushID(i);
             ImGui::Text("%s", h.name.c_str());
-            ImGui::SameLine(200);
             ImGui::TextColored(ImVec4(1, 1, 0, 1), "Load: %.1f%%", h.load);
+            ImGui::ProgressBar(h.load / 100.0f);
             ImGui::Text("Powered: %s", h.powered ? "YES" : "NO");
             // Manual controls
             if (h.powered)
