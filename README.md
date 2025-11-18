@@ -27,43 +27,12 @@ A real-time power grid simulation built with OpenGL, GLFW, GLAD, Dear ImGui, and
 
 ## Build Instructions
 
-### Windows
+To build the project, press `Ctrl+Shift+B` in VSCode.
 
-1. **Prerequisites**: Ensure CMake, GLFW, and OpenGL are installed.
-
-2. **Build with CMake**:
-   ```bash
-   mkdir build
-   cd build
-   cmake ..
-   cmake --build . --config Release
-   ```
-
-3. **Run**:
-   ```bash
-   ./power_grid.exe
-   ```
-
-### Linux
-
-1. **Install dependencies**:
-   ```bash
-   sudo apt-get update
-   sudo apt-get install cmake libglfw3-dev libgl1-mesa-dev
-   ```
-
-2. **Build**:
-   ```bash
-   mkdir build
-   cd build
-   cmake ..
-   make
-   ```
-
-3. **Run**:
-   ```bash
-   ./power_grid
-   ```
+To run the executable:
+```bash
+./cutable.exe
+```
 
 ## Project Structure
 
